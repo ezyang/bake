@@ -1,0 +1,46 @@
+foo-0.1
+ModName foo_PKGKEY:RealName
+ModName2 foo_PKGKEY:RealName
+foo_PKGKEY
+foo2_PKGKEY
+
+----
+
+we have to talk about package distribution EVENTUALLY
+    where to draw the line? matter of taste
+    for Backpack, we do it because it's in Haskell
+    also, you need this modularity precisely for things on different sides of the planet so that's what Hackage is for
+
+sounds simple but is complicated
+    (the PhD problem is in reverse)
+    generative applicative / it depends on what you expect
+    module level granularity is a compromise
+
+docs
+    example
+        top-level
+            vanilla
+                point out that p and q could be in the single bkp, or separate
+            package with hole
+        each section
+        2.6 mention pkgdb_field
+            bin-package-db
+    "installed-ids" in field grammar versus "id"
+    Cabal wants to find as many installed things as possible
+        Cabal indiscriminately says what is installed
+            but this is not necessary UNLESS there can be multiple ipids per package key
+    package ::= installed package | package
+    Cabal can put one or lots of packages in one
+        lens-linked/lens
+        distinguish with the Cabal selection for a signature
+
+comments in GhcMonad.hs
+    Session is an IORef to HscEnv (HscEnv is like Session: fix this)
+
+FinderCache should record what the package it is from
+    it does seem like hsc_MLC and hsc_FC are updated together (a pair)
+    so call the combined thing FinderCache
+
+We're not caching file system information for packages at all!
+
+goal: abandon FinderCache, by storing home package stuff <thisPackage, moduleName>
