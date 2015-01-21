@@ -1,3 +1,27 @@
+Recursive dependency problem:
+
+package q where
+    A :: [ ... ]
+    B = [ ... ]
+
+package p where
+    A = [ ... ]
+    include q
+
+What is the package key of q in this instantiation?
+Included in it should be A -> p_KEY:A.
+
+What is the package key of p?  According to the current
+algorithm, it includes the package keys of ALL PACKAGES IT INCLUDES.
+
+CIRCULARITY.
+
+Workaround:
+    full transitive: this precludes multiple versions of same package coexisting in package
+    extra "version hash". Should work, need to store it as extra data in the package db (YET ANOTHER ID)
+
+----
+
 foo-0.1
 ModName foo_PKGKEY:RealName
 ModName2 foo_PKGKEY:RealName
@@ -19,9 +43,9 @@ sounds simple but is complicated
 docs
     example
         top-level
-            vanilla
-                point out that p and q could be in the single bkp, or separate
-            package with hole
+X           vanilla
+X               point out that p and q could be in the single bkp, or separate
+X           package with hole
         each section
         2.6 mention pkgdb_field
             bin-package-db
