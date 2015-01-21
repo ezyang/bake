@@ -3,3 +3,6 @@ dist
 tags
 ghc
 environ
+Main
+*.hi
+*.o
