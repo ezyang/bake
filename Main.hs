@@ -1,3 +1,4 @@
+{-# LANGUAGE MultiWayIf #-}
 import qualified GHC
 import GHC (Ghc, GhcMonad(..), LoadHowMuch(..))
 import GhcMonad
@@ -112,6 +113,9 @@ data PackageEnv =
 lookupBackpack :: PackageEnv -> PackageName -> Maybe Backpack
 lookupBackpack pkg_env = lookupUFM (pkg_sources pkg_env)
 
+lookupHoles :: PackageEnv -> PackageName -> Maybe PackageType
+lookupHoles pkg_env = lookupUFM (pkg_types pkg_env)
+
 lookupInstalledPackage :: PackageEnv -> PackageName -> Maybe InstalledPackageId
 lookupInstalledPackage pkg_env = lookupUFM (pkg_installs pkg_env)
 
@@ -208,8 +212,12 @@ mkPackageName = PackageName . mkFastString
 
 mkInstalledPackageId = InstalledPackageId . mkFastString
 
+-- GOOFY
+convRenaming Nothing = ModRenaming True []
+convRenaming (Just rns) = ModRenaming False [ (moduleNameString orig, moduleNameString new) | (orig, new) <- rns]
+
 --------------------------------------------------------------------------
--- Example data
+-- Example data / Sample data
 
 package_p = Backpack {
         backpackName = mkPackageName "p",
@@ -217,13 +225,14 @@ package_p = Backpack {
         backpackExposedModules = [mkModuleName "P"],
         backpackOtherModules = [],
         backpackExposedSignatures = [],
-        backpackRequiredSignatures = [],
+        backpackRequiredSignatures = [mkModuleName "Hole"],
         backpackSourceDir = "p"
     }
 
 package_q = Backpack {
         backpackName = mkPackageName "q",
         backpackIncludes = [ PkgInclude (mkPackageName "base") Nothing
+                           , PkgInclude (mkPackageName "base") (Just [(mkModuleName "Data.Word", mkModuleName "Hole")])
                            , PkgInclude (mkPackageName "p") Nothing],
         backpackExposedModules = [mkModuleName "Q"],
         backpackOtherModules = [],
@@ -251,7 +260,7 @@ main = do
 
     GHC.runGhc (Just libdir) $ do
     dflags0 <- GHC.getSessionDynFlags
-    let dflags = id -- flip dopt_set Opt_D_ppr_debug
+    let dflags = flip gopt_set Opt_HideAllPackages -- should it be here...
                $ dflags0 { ghcLink = LinkBinary
                          , ghcMode = CompManager
                          , verbosity = 1 }
@@ -276,7 +285,6 @@ main = do
                     ]
 
     _ <- compile pkg_env (mkPackageName "q") Map.empty
-    _ <- compile pkg_env (mkPackageName "p") Map.empty
     return ()
 
 calculateHoles src_pkg_db = foldl' add_trans emptyUFM (topologicalOrder src_pkg_db)
@@ -322,44 +330,46 @@ addPackage pkg = do
     return ()
 
 compileDep :: PackageEnv
-           -> Map ModuleName Module
+           -> (Map ModuleName Module, [(PackageConfig, PkgInclude)])
            -> PkgInclude
-           -> Ghc (Map ModuleName Module)
-compileDep pkg_env m (PkgInclude n rns)
-    | Just holes <- lookupUFM (pkg_types pkg_env) n
-    = do -- TODO HANDLE RENAMING
-         pkg <- compile pkg_env n
-                        (Map.intersection m (Map.fromSet (const ()) holes))
-         dflags <- GHC.getSessionDynFlags
-         let add_pkg :: Map ModuleName Module
-                     -> Maybe [(ModuleName, ModuleName)]
-                     -> Map ModuleName Module
-             add_pkg m Nothing = foldl' add_mod m
-                               . map (\e@(ExposedModule n _ _) -> (n, e))
-                               $ exposedModules pkg
-             add_pkg m (Just rns) = foldl' add_rn_mod m rns
-             add_rn_mod m (orig, new) =
-                 case find (\(ExposedModule n _ _) -> n == orig) (exposedModules pkg) of
-                     Nothing -> error "oopsies"
-                     Just e -> add_mod m (new, e)
-             add_mod m (bnd, ExposedModule n _ (Just backing))
-             -- TODO: ASSERT NO CONFLICT
-                 = Map.insert bnd (convOriginalModule dflags backing) m
-             add_mod m (bnd, ExposedModule n (Just export) Nothing)
-                 = Map.insert bnd (convOriginalModule dflags export) m
-             add_mod m (bnd, ExposedModule n Nothing Nothing)
-                 = Map.insert bnd (mkModule (packageKey pkg) n) m
-         return (add_pkg m rns)
-    | otherwise
-    = return m
-    -- FIX THE PATTERN MATCHING
+           -> Ghc (Map ModuleName Module, [(PackageConfig, PkgInclude)])
+compileDep pkg_env (m, pkgs) incl@(PkgInclude n rns) = do
+    dflags <- GHC.getSessionDynFlags
+    pkg <- if | Just holes <- lookupHoles pkg_env n
+                   -- TODO HANDLE RENAMING
+                -> compile pkg_env n (Map.intersection m (Map.fromSet (const ()) holes))
+              | Just ipid <- lookupInstalledPackage pkg_env n
+                -> return (getPackageDetails dflags (resolveInstalledPackageId dflags ipid))
+              | otherwise
+                -> error "tuturu"
+    dflags <- GHC.getSessionDynFlags
+    let add_pkg :: Map ModuleName Module
+                -> Maybe [(ModuleName, ModuleName)]
+                -> Map ModuleName Module
+        add_pkg m Nothing = foldl' add_mod m
+                          . map (\e@(ExposedModule n _ _) -> (n, e))
+                          $ exposedModules pkg
+        add_pkg m (Just rns) = foldl' add_rn_mod m rns
+        add_rn_mod m (orig, new) =
+            case find (\(ExposedModule n _ _) -> n == orig) (exposedModules pkg) of
+                Nothing -> error "oopsies"
+                Just e -> add_mod m (new, e)
+        add_mod m (bnd, ExposedModule n _ (Just backing))
+        -- TODO: ASSERT NO CONFLICT
+            = Map.insert bnd (convOriginalModule dflags backing) m
+        add_mod m (bnd, ExposedModule n (Just export) Nothing)
+            = Map.insert bnd (convOriginalModule dflags export) m
+        add_mod m (bnd, ExposedModule n Nothing Nothing)
+            = Map.insert bnd (mkModule (packageKey pkg) n) m
+    return (add_pkg m rns, (pkg, incl):pkgs)
 
--- Invariant: hmap contains only PRECISELY the holes you need
+-- Invariant: hmap contains only PRECISELY the holes you need.  This
+-- means we can just slam it and make a package key
 compile' :: PackageEnv -> Backpack -> Map ModuleName Module -> Ghc PackageConfig
 compile' pkg_env p hmap = do
     let PackageName fs_name = backpackName p
-        version = makeVersion [0]
-        source_pkg_id = SourcePackageId fs_name -- VERSION
+        version = makeVersion [0] -- TODO Grab it from real field
+        source_pkg_id = SourcePackageId fs_name -- TODO use version
         key = mkPackageKey (backpackName p) source_pkg_id (Map.toList hmap)
 
     dflags <- GHC.getSessionDynFlags
@@ -372,7 +382,7 @@ compile' pkg_env p hmap = do
     -- TODO: This is all a bit goofy because we do it again when
     -- we internally process packages.  Probably need to be more
     -- in depth if I want to actually properly setup exposed.
-    foldM_ (compileDep pkg_env) hmap (backpackIncludes p)
+    (_, flags) <- foldM (compileDep pkg_env) (hmap, []) (backpackIncludes p)
     dflags <- GHC.getSessionDynFlags
 
     pprTrace "Compiling" (ppr (backpackName p) <+> parens (pprKey key)) $ return ()
@@ -380,10 +390,9 @@ compile' pkg_env p hmap = do
     let outdir = "dist" </> packageKeyString key
     liftIO $ createDirectoryIfMissing False outdir
 
-    withTempSession id $ do -- drop the package stuff
+    exposed <- withTempSession id $ do
         let targets = map (\m -> Target (TargetModule m) True Nothing)
                           (backpackExposedModules p)
-        -- XXX: control package visibility properly
         dflags <- return $ dflags {
                 importPaths = [backpackSourceDir p],
                 thisPackage = key,
@@ -391,22 +400,48 @@ compile' pkg_env p hmap = do
                 hiDir       = Just outdir,
                 stubDir     = Just outdir,
                 sigOf       = SigOfMap hmap,
+                -- goofy conversion to string
+                packageFlags= [ ExposePackage (PackageIdArg (installedPackageIdString pkg))
+                                              (convRenaming rns)
+                              | (pkg, PkgInclude _ rns) <- flags ],
                 includePaths= outdir : includePaths dflags,
                 dumpDir     = Just outdir
             }
+        pprTrace "sigof" (ppr hmap) $ return ()
         _ <- GHC.setSessionDynFlags dflags
 
         GHC.setTargets targets
         ok_flag <- GHC.load LoadAllTargets
         when (failed ok_flag) (liftIO $ exitWith (ExitFailure 1))
 
+        hsc_env <- getSession
+
+            -- reexport is nice: we can just do a normal module lookup
+            -- and use that result.  But can't really do this properly
+            -- without the signature import patch.
+        let {- lookup_reexport m = do
+                r <- liftIO $ findImportedModule hsc_env m Nothing
+                case r of
+                    Found _ orig -> return [ExposedModule m (Just orig) mb_sig]
+                    _ -> return [] -- ACTUALLY SHOULD ERROR HERE
+                    -}
+            lookup_sig m = case Map.lookup m hmap of
+                                Nothing -> error "boop"
+                                Just orig ->
+                                    let pkg = getPackageDetails dflags (modulePackageKey orig)
+                                    in ExposedModule m Nothing (Just (OriginalModule (installedPackageId pkg) (moduleName orig)))
+            sigs = map lookup_sig (backpackExposedSignatures p)
+            exposed = map (\n -> ExposedModule n Nothing Nothing) (backpackExposedModules p)
+                            ++ sigs
+
         -- Note: must do it here! This is because it only drops home
         -- package modules... and it could only tell this by comparing
         -- thisPackage against the key stored in the table.  Once
         -- we exit the temporary session we lose this designation
         -- and the entries are stuck in the cache.
-        hsc_env <- getSession
+        -- TODO: Fix this bug in GHC proper
         liftIO $ flushFinderCaches hsc_env
+        return exposed
 
     let pkg = InstalledPackageInfo {
             installedPackageId = InstalledPackageId fs_name, -- TODO: abi hash
@@ -414,8 +449,7 @@ compile' pkg_env p hmap = do
             packageName = backpackName p,
             packageVersion = version,
             packageKey = key,
-            exposedModules =
-                map (\n -> ExposedModule n Nothing Nothing) (backpackExposedModules p),
+            exposedModules = exposed,
             hiddenModules = [], -- TODO: doc only
             instantiatedWith = [], -- TODO (not used by anything right now)
             depends = [], -- ???
