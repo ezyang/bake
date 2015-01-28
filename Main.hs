@@ -60,6 +60,24 @@ main = do
 --------------------------------------------------------------------------
 -- Example data / Sample data
 
+{-
+
+installed package base
+    installed-id: base-4.8.0.0-e29e6aeb808f5a1814cb5be39ea4f618
+
+package p
+    includes: base
+    exposed-modules: P
+    required-signatures: Hole
+    source-dir: p
+
+package q
+    includes: base, base (Data.Word as Hole), p
+    exposed-modules: Q
+    source-dir: q
+
+-}
+
 package_p = Backpack {
         backpackName = mkPackageName "p",
         backpackIncludes = [PkgInclude (mkPackageName "base") Nothing],

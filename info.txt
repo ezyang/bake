@@ -5,8 +5,8 @@ package q where
     B = [ ... ]
 
 package p where
-    A = [ ... ]
     include q
+    A = [ import B ; ... ]
 
 What is the package key of q in this instantiation?
 Included in it should be A -> p_KEY:A.
@@ -19,6 +19,9 @@ CIRCULARITY.
 Workaround:
     full transitive: this precludes multiple versions of same package coexisting in package
     extra "version hash". Should work, need to store it as extra data in the package db (YET ANOTHER ID)
+
+Does the mu trick solve the problem?
+    no, but only because there's no "recursion" to be done
 
 ----
 
@@ -68,3 +71,24 @@ FinderCache should record what the package it is from
 We're not caching file system information for packages at all!
 
 goal: abandon FinderCache, by storing home package stuff <thisPackage, moduleName>
+
+----
+
+FinderCache in hsc_FC (home package only)
+    ModuleName -> FindResult
+
+ModLocationCache in hsc_MLC
+    Module -> ModLocation
+    modLocationCache
+        findPackageModule
+
+Both
+    homeSearchCache (to MLC if it is found)
+    addHomeModuleToFinder
+        summariseFile (batch compilation)
+        runPhase (Hsc ...) (one shot)
+    uncacheModule
+        summariseModule (when a source file disappeared)
+
+flushFinderCaches: when working directory changes
+    clears all of FinderCache, home modules only from ModLocationCache
